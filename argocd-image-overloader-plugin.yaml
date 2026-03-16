@@ -6,6 +6,8 @@ metadata:
 data:
   configManagementPlugins: |
     - name: image-overloader
+      sourceRepos:
+        - "*"
       generate:
         command: ["/bin/sh", "-c"]
         args:
