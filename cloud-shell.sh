@@ -167,6 +167,41 @@ gcloud artifacts repositories create k8-builder-images \
   --location="$REGION" || true
 
 echo
+echo "=== Step 2b: Ensure cluster and workflows can pull from k8-builder-images ==="
+PLATFORM_PROJECT_NUMBER="$(gcloud projects describe "$PLATFORM_PROJECT_ID" --format='value(projectNumber)')"
+NODE_SA="${PLATFORM_PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+KANIKO_SA="kaniko-builder@${PLATFORM_PROJECT_ID}.iam.gserviceaccount.com"
+
+# Create kaniko-builder in platform project if missing (for Workload Identity + pull)
+gcloud iam service-accounts create kaniko-builder \
+  --project="$PLATFORM_PROJECT_ID" \
+  --display-name="Kaniko Builder" 2>/dev/null || true
+
+
+#artifactregistry.repositories.downloadArtifacts
+# Grant repo-level pull to both node SA and kaniko-builder (no conditions on repo)
+echo "Granting roles/artifactregistry.reader on k8-builder-images to node SA ${NODE_SA}..."
+if ! gcloud artifacts repositories add-iam-policy-binding k8-builder-images \
+  --location="$REGION" \
+  --member="serviceAccount:${NODE_SA}" \
+  --role="roles/artifactregistry.reader"; then
+  echo "ERROR: Node SA grant failed. Workflow pods will not be able to pull k8-builder image."
+  echo "Run manually: gcloud artifacts repositories add-iam-policy-binding k8-builder-images --location=$REGION --member=\"serviceAccount:${NODE_SA}\" --role=\"roles/artifactregistry.reader\""
+fi
+echo "Granting roles/artifactregistry.reader on k8-builder-images to ${KANIKO_SA}..."
+gcloud artifacts repositories add-iam-policy-binding k8-builder-images \
+  --location="$REGION" \
+  --member="serviceAccount:${KANIKO_SA}" \
+  --role="roles/artifactregistry.reader" 2>/dev/null || true
+
+# Bind argo-workflow KSA to kaniko-builder so workflow pods can pull via Workload Identity
+kubectl annotate serviceaccount argo-workflow -n argo \
+  iam.gke.io/gcp-service-account="${KANIKO_SA}" --overwrite 2>/dev/null || true
+gcloud iam service-accounts add-iam-policy-binding "$KANIKO_SA" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:${PLATFORM_PROJECT_ID}.svc.id.goog[argo/argo-workflow]" 2>/dev/null || true
+
+echo
 echo "=== Step 3: Build and push k8_builder image ==="
 gcloud auth configure-docker "$REGION-docker.pkg.dev"
 
@@ -217,6 +252,8 @@ else
   echo "Installing Argo Workflows version $ARGO_WORKFLOWS_VERSION..."
   kubectl apply -n argo -f "https://github.com/argoproj/argo-workflows/releases/download/$ARGO_WORKFLOWS_VERSION/install.yaml"
 fi
+# SA used by project-bootstrap pods (Workload Identity for Artifact Registry pull)
+kubectl create serviceaccount argo-workflow -n argo 2>/dev/null || true
 
 echo
 echo "=== Step 6: Configure Argo CD image-overloader plugin ==="
@@ -253,8 +290,10 @@ spec:
         default: "app-"
   templates:
     - name: bootstrap
+      serviceAccountName: argo-workflow
       container:
         image: $IMAGE
+        command: ["/setup.sh"]
         env:
           - name: BILLING_ACCOUNT_ID
             value: "$BILLING_ACCOUNT_ID"

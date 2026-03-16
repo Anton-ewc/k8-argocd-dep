@@ -58,6 +58,11 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:kaniko-builder@$PROJECT_ID.iam.gserviceaccount.com" \
     --role="roles/storage.admin"
 
+# Allow workflow pods to pull images from Artifact Registry (e.g. k8-builder)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:kaniko-builder@$PROJECT_ID.iam.gserviceaccount.com" \
+    --role="roles/artifactregistry.reader"
+
 # Allow K8s to act as this GCP Service Account
 gcloud iam service-accounts add-iam-policy-binding \
     kaniko-builder@$PROJECT_ID.iam.gserviceaccount.com \
@@ -98,6 +103,9 @@ spec:
       - name: projectId
         description: "Project ID to use for the image"
         default: "$PROJECT_ID"
+      - name: region
+        description: "Region to use for the image"
+        default: "$REGION"
   templates:
     - name: build
       container:
