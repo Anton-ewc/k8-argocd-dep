@@ -1,5 +1,15 @@
 ### Overview
 
+## Download Install:
+```sh
+curl -L -o arg.tar.gz https://github.com/Anton-ewc/k8-argocd-dep/archive/refs/tags/arg.tar.gz &&
+tar -xzf arg.tar.gz --strip-components=1 &&
+chmod +x cloud-shell.sh &&
+./cloud-shell.sh
+```
+
+
+
 This repo provides a Dockerized automation tool (`k8_builder`) that:
 
 - **Creates or reuses GCP projects** automatically.

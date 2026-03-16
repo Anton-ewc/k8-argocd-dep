@@ -1,98 +1,96 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: argocd-cm
+  name: argocd-cmp-cm
   namespace: argocd
 data:
-  configManagementPlugins: |
-    - name: image-overloader
-      sourceRepos:
-        - "*"
-      generate:
-        command: ["/bin/sh", "-c"]
-        args:
-          - |
-            set -eu
+  image-overloader: |
+    name: image-overloader
+    generate:
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
 
-            # Environment-driven behavior:
-            #   MANIFEST_DIR                - directory to render (default: .)
-            #   SEARCH_TEXT / REPLACE_TEXT  - optional generic text replacement
-            #   SEARCH_IMAGE / REPLACE_IMAGE - backward-compatible aliases
-            #
-            MANIFEST_DIR="${MANIFEST_DIR:-.}"
-            SEARCH_TEXT="${SEARCH_TEXT:-${SEARCH_IMAGE:-}}"
-            REPLACE_TEXT="${REPLACE_TEXT:-${REPLACE_IMAGE:-}}"
+          # Environment-driven behavior:
+          #   MANIFEST_DIR                - directory to render (default: .)
+          #   SEARCH_TEXT / REPLACE_TEXT  - optional generic text replacement
+          #   SEARCH_IMAGE / REPLACE_IMAGE - backward-compatible aliases
+          #
+          MANIFEST_DIR="${MANIFEST_DIR:-.}"
+          SEARCH_TEXT="${SEARCH_TEXT:-${SEARCH_IMAGE:-}}"
+          REPLACE_TEXT="${REPLACE_TEXT:-${REPLACE_IMAGE:-}}"
 
-            if [ ! -d "$MANIFEST_DIR" ]; then
-              echo "MANIFEST_DIR does not exist: $MANIFEST_DIR" >&2
-              exit 1
+          if [ ! -d "$MANIFEST_DIR" ]; then
+            echo "MANIFEST_DIR does not exist: $MANIFEST_DIR" >&2
+            exit 1
+          fi
+
+          esc_sed_re() {
+            printf '%s' "$1" | sed -e 's/[.[\*^$()+?{}|]/\\&/g' -e 's/\//\\\//g'
+          }
+
+          esc_sed_repl() {
+            printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+          }
+
+          render_file() {
+            file_path="$1"
+            rendered="$(cat "$file_path")"
+
+            # Replace placeholders from current environment:
+            #   ${VAR}, $VAR, {{VAR}}
+            env_file="$(mktemp)"
+            env > "$env_file"
+            while IFS='=' read -r k v; do
+              [ -n "$k" ] || continue
+              [ -n "$v" ] || continue
+              v_esc="$(esc_sed_repl "$v")"
+
+              # ${VAR}
+              ph_braced="\${${k}}"
+              ph_braced_esc="$(esc_sed_re "$ph_braced")"
+              rendered="$(printf '%s' "$rendered" | sed "s/${ph_braced_esc}/${v_esc}/g")"
+
+              # {{VAR}}
+              ph_mustache="{{${k}}}"
+              ph_mustache_esc="$(esc_sed_re "$ph_mustache")"
+              rendered="$(printf '%s' "$rendered" | sed "s/${ph_mustache_esc}/${v_esc}/g")"
+
+              # $VAR
+              ph_plain='$'"$k"
+              ph_plain_esc="$(esc_sed_re "$ph_plain")"
+              rendered="$(printf '%s' "$rendered" | sed "s/${ph_plain_esc}/${v_esc}/g")"
+            done < "$env_file"
+            rm -f "$env_file"
+
+            # Optional generic text override (no hardcoded field names).
+            if [ -n "$SEARCH_TEXT" ] && [ -n "$REPLACE_TEXT" ]; then
+              search_esc="$(esc_sed_re "$SEARCH_TEXT")"
+              replace_esc="$(esc_sed_repl "$REPLACE_TEXT")"
+              rendered="$(printf '%s' "$rendered" | sed "s/${search_esc}/${replace_esc}/g")"
             fi
 
-            esc_sed_re() {
-              printf '%s' "$1" | sed -e 's/[.[\*^$()+?{}|]/\\&/g' -e 's/\//\\\//g'
-            }
+            printf '%s\n' "$rendered"
+          }
 
-            esc_sed_repl() {
-              printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
-            }
+          file_list="$(mktemp)"
+          find "$MANIFEST_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \) -print > "$file_list"
 
-            render_file() {
-              file_path="$1"
-              rendered="$(cat "$file_path")"
-
-              # Replace placeholders from current environment:
-              #   ${VAR}, $VAR, {{VAR}}
-              env_file="$(mktemp)"
-              env > "$env_file"
-              while IFS='=' read -r k v; do
-                [ -n "$k" ] || continue
-                [ -n "$v" ] || continue
-                v_esc="$(esc_sed_repl "$v")"
-
-                # ${VAR}
-                ph_braced="\${${k}}"
-                ph_braced_esc="$(esc_sed_re "$ph_braced")"
-                rendered="$(printf '%s' "$rendered" | sed "s/${ph_braced_esc}/${v_esc}/g")"
-
-                # {{VAR}}
-                ph_mustache="{{${k}}}"
-                ph_mustache_esc="$(esc_sed_re "$ph_mustache")"
-                rendered="$(printf '%s' "$rendered" | sed "s/${ph_mustache_esc}/${v_esc}/g")"
-
-                # $VAR
-                ph_plain='$'"$k"
-                ph_plain_esc="$(esc_sed_re "$ph_plain")"
-                rendered="$(printf '%s' "$rendered" | sed "s/${ph_plain_esc}/${v_esc}/g")"
-              done < "$env_file"
-              rm -f "$env_file"
-
-              # Optional generic text override (no hardcoded field names).
-              if [ -n "$SEARCH_TEXT" ] && [ -n "$REPLACE_TEXT" ]; then
-                search_esc="$(esc_sed_re "$SEARCH_TEXT")"
-                replace_esc="$(esc_sed_repl "$REPLACE_TEXT")"
-                rendered="$(printf '%s' "$rendered" | sed "s/${search_esc}/${replace_esc}/g")"
-              fi
-
-              printf '%s\n' "$rendered"
-            }
-
-            file_list="$(mktemp)"
-            find "$MANIFEST_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \) -print > "$file_list"
-
-            if [ ! -s "$file_list" ]; then
-              echo "No YAML manifests found under: $MANIFEST_DIR" >&2
-              rm -f "$file_list"
-              exit 1
-            fi
-
-            first_file=1
-            while IFS= read -r f; do
-              [ -f "$f" ] || continue
-              if [ "$first_file" -eq 0 ]; then
-                printf '\n---\n'
-              fi
-              render_file "$f"
-              first_file=0
-            done < "$file_list"
-
+          if [ ! -s "$file_list" ]; then
+            echo "No YAML manifests found under: $MANIFEST_DIR" >&2
             rm -f "$file_list"
+            exit 1
+          fi
+
+          first_file=1
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            if [ "$first_file" -eq 0 ]; then
+              printf '\n---\n'
+            fi
+            render_file "$f"
+            first_file=0
+          done < "$file_list"
+
+          rm -f "$file_list"
