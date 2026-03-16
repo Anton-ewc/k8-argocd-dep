@@ -6,5 +6,5 @@ git push
 git tag arg
 git push origin arg
 
-gh delete release arg
+gh release delete arg --yes
 gh release create arg --title "release arg $date" --notes "release arg $date"
